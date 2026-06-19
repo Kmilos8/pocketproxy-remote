@@ -813,6 +813,13 @@ class InputService : AccessibilityService() {
         super.onServiceConnected()
         ctx = this
         val info = AccessibilityServiceInfo()
+        // PocketProxy Remote (81-02): stock RustDesk leaves eventTypes unset here, which
+        // OVERRIDES the XML config and unsubscribes us from window events — so our auto-accept
+        // onAccessibilityEvent never fires. Restore the window-state subscription (RustDesk's own
+        // input injection is push-based via dispatchGesture and does not need events).
+        info.eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or AccessibilityEvent.TYPE_WINDOWS_CHANGED
+        info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+        info.notificationTimeout = 100
         if (Build.VERSION.SDK_INT >= 33) {
             info.flags = FLAG_INPUT_METHOD_EDITOR or FLAG_RETRIEVE_INTERACTIVE_WINDOWS
         } else {
