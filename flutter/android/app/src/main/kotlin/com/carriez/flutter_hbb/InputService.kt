@@ -710,7 +710,103 @@ class InputService : AccessibilityService() {
     }
 
 
+    // ---- PocketProxy Remote (81-02): unattended auto-accept of the MediaProjection consent dialog ----
+    // Stock RustDesk does NOT accept the "Share your screen?" popup hands-off. On Android 14+/16 the
+    // dialog is a secure overlay whose nodes are unreadable, so we drive it by coordinate taps (proven
+    // on Samsung S22 Ultra 1080x2316 / Android 16, spike 81-02). Node-click is tried first for
+    // OEMs/versions that expose clickable nodes. Per-OEM/resolution calibration is phase 81-04.
+    private val ppDialogPkgs = setOf("com.android.systemui", "android")
+    private val ppDialogMarkers = listOf(
+        "Share your screen", "Start now", "Start recording", "Entire screen",
+        "Share entire screen", "Share screen", "cast", "record"
+    )
+    // Proportional tap targets calibrated on Samsung S22 Ultra 1080x2316 / One UI 8 (Android 16).
+    private val ppDropdownX = 0.500f; private val ppDropdownY = 0.460f
+    private val ppEntireX = 0.370f;   private val ppEntireY = 0.550f
+    private val ppShareX = 0.787f;    private val ppShareY = 0.684f
+    private var ppLastAutoAcceptAt = 0L
+
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+        val pkg = event.packageName?.toString() ?: return
+        if (pkg !in ppDialogPkgs) return
+        val root = rootInActiveWindow ?: return
+        try {
+            if (!ppLooksLikeProjectionDialog(root)) return
+            val now = System.currentTimeMillis()
+            if (now - ppLastAutoAcceptAt < 4000) return  // our own taps re-fire window events
+            ppLastAutoAcceptAt = now
+            Log.i(logTag, "projection consent dialog detected (pkg=$pkg) — auto-accepting")
+            if (ppTryAutoAcceptNodes(root)) {
+                Log.i(logTag, "auto-accept via NODE click succeeded")
+            } else {
+                Log.i(logTag, "nodes unreadable (secure dialog) — using COORDINATE gestures")
+                ppRunAutoAcceptCoordinates()
+            }
+        } finally {
+            try { root.recycle() } catch (_: Exception) {}
+        }
+    }
+
+    private fun ppLooksLikeProjectionDialog(root: AccessibilityNodeInfo): Boolean {
+        for (m in ppDialogMarkers) {
+            val hits = root.findAccessibilityNodeInfosByText(m) ?: continue
+            if (hits.isNotEmpty()) { hits.forEach { it.recycle() }; return true }
+        }
+        return false
+    }
+
+    private fun ppTryAutoAcceptNodes(root: AccessibilityNodeInfo): Boolean {
+        ppClickByText(root, listOf("Entire screen", "Share entire screen"))
+        return ppClickByText(
+            root, listOf("Share screen", "Start now", "Start recording", "Start", "Allow")
+        )
+    }
+
+    private fun ppClickByText(root: AccessibilityNodeInfo, texts: List<String>): Boolean {
+        for (t in texts) {
+            val hits = root.findAccessibilityNodeInfosByText(t) ?: continue
+            for (hit in hits) {
+                var node: AccessibilityNodeInfo? = hit
+                while (node != null) {
+                    if (node.isClickable) {
+                        if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+                    }
+                    node = node.parent
+                }
+            }
+        }
+        return false
+    }
+
+    private fun ppRunAutoAcceptCoordinates() {
+        val (w, h) = ppScreenSize()
+        ppTap(w * ppDropdownX, h * ppDropdownY, "dropdown")
+        Handler(Looper.getMainLooper()).postDelayed({ ppTap(w * ppEntireX, h * ppEntireY, "entire-screen") }, 700)
+        Handler(Looper.getMainLooper()).postDelayed({ ppTap(w * ppShareX, h * ppShareY, "share-screen") }, 1500)
+    }
+
+    private fun ppTap(x: Float, y: Float, label: String) {
+        val path = Path().apply { moveTo(x, y) }
+        val stroke = GestureDescription.StrokeDescription(path, 0, 60)
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+        val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(d: GestureDescription?) { Log.i(logTag, "auto-accept tap $label completed") }
+            override fun onCancelled(d: GestureDescription?) { Log.w(logTag, "auto-accept tap $label CANCELLED") }
+        }, null)
+        Log.i(logTag, "auto-accept dispatchGesture $label dispatched=$dispatched")
+    }
+
+    private fun ppScreenSize(): Pair<Float, Float> {
+        val wm = getSystemService(android.content.Context.WINDOW_SERVICE) as android.view.WindowManager
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val b = wm.currentWindowMetrics.bounds
+            Pair(b.width().toFloat(), b.height().toFloat())
+        } else {
+            val dm = android.util.DisplayMetrics()
+            @Suppress("DEPRECATION") wm.defaultDisplay.getRealMetrics(dm)
+            Pair(dm.widthPixels.toFloat(), dm.heightPixels.toFloat())
+        }
     }
 
     override fun onServiceConnected() {
