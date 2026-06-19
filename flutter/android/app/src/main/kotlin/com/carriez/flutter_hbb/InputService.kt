@@ -715,33 +715,29 @@ class InputService : AccessibilityService() {
     // dialog is a secure overlay whose nodes are unreadable, so we drive it by coordinate taps (proven
     // on Samsung S22 Ultra 1080x2316 / Android 16, spike 81-02). Node-click is tried first for
     // OEMs/versions that expose clickable nodes. Per-OEM/resolution calibration is phase 81-04.
-    private val ppDialogPkgs = setOf("com.android.systemui", "android")
-    private val ppDialogMarkers = listOf(
-        "Share your screen", "Start now", "Start recording", "Entire screen",
-        "Share entire screen", "Share screen", "cast", "record"
-    )
-    // Proportional tap targets calibrated on Samsung S22 Ultra 1080x2316 / One UI 8 (Android 16).
-    private val ppDropdownX = 0.500f; private val ppDropdownY = 0.460f
-    private val ppEntireX = 0.370f;   private val ppEntireY = 0.550f
-    private val ppShareX = 0.787f;    private val ppShareY = 0.684f
+    // Per-OEM/version auto-accept tuning (81-04). Selected once per device from Build.MANUFACTURER
+    // + SDK; see OemQuirks. Coordinates are proportional so a profile scales across resolutions.
+    private val ppProfile = OemQuirks.current()
     private var ppLastAutoAcceptAt = 0L
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         val pkg = event.packageName?.toString() ?: return
-        if (pkg !in ppDialogPkgs) return
+        if (pkg !in ppProfile.dialogPkgs) return
         val root = rootInActiveWindow ?: return
         try {
             if (!ppLooksLikeProjectionDialog(root)) return
             val now = System.currentTimeMillis()
             if (now - ppLastAutoAcceptAt < 4000) return  // our own taps re-fire window events
             ppLastAutoAcceptAt = now
-            Log.i(logTag, "projection consent dialog detected (pkg=$pkg) — auto-accepting")
+            Log.i(logTag, "projection consent dialog detected (pkg=$pkg, mfr=${Build.MANUFACTURER}) — auto-accepting")
             if (ppTryAutoAcceptNodes(root)) {
                 Log.i(logTag, "auto-accept via NODE click succeeded")
-            } else {
+            } else if (ppProfile.useCoordinateFallback) {
                 Log.i(logTag, "nodes unreadable (secure dialog) — using COORDINATE gestures")
                 ppRunAutoAcceptCoordinates()
+            } else {
+                Log.w(logTag, "node click failed and coordinate fallback disabled for this profile")
             }
         } finally {
             try { root.recycle() } catch (_: Exception) {}
@@ -749,7 +745,7 @@ class InputService : AccessibilityService() {
     }
 
     private fun ppLooksLikeProjectionDialog(root: AccessibilityNodeInfo): Boolean {
-        for (m in ppDialogMarkers) {
+        for (m in ppProfile.markers) {
             val hits = root.findAccessibilityNodeInfosByText(m) ?: continue
             if (hits.isNotEmpty()) { hits.forEach { it.recycle() }; return true }
         }
@@ -757,10 +753,8 @@ class InputService : AccessibilityService() {
     }
 
     private fun ppTryAutoAcceptNodes(root: AccessibilityNodeInfo): Boolean {
-        ppClickByText(root, listOf("Entire screen", "Share entire screen"))
-        return ppClickByText(
-            root, listOf("Share screen", "Start now", "Start recording", "Start", "Allow")
-        )
+        ppClickByText(root, ppProfile.entireScreenTexts)
+        return ppClickByText(root, ppProfile.confirmTexts)
     }
 
     private fun ppClickByText(root: AccessibilityNodeInfo, texts: List<String>): Boolean {
@@ -781,9 +775,10 @@ class InputService : AccessibilityService() {
 
     private fun ppRunAutoAcceptCoordinates() {
         val (w, h) = ppScreenSize()
-        ppTap(w * ppDropdownX, h * ppDropdownY, "dropdown")
-        Handler(Looper.getMainLooper()).postDelayed({ ppTap(w * ppEntireX, h * ppEntireY, "entire-screen") }, 700)
-        Handler(Looper.getMainLooper()).postDelayed({ ppTap(w * ppShareX, h * ppShareY, "share-screen") }, 1500)
+        val p = ppProfile
+        ppTap(w * p.dropdown.first, h * p.dropdown.second, "dropdown")
+        Handler(Looper.getMainLooper()).postDelayed({ ppTap(w * p.entire.first, h * p.entire.second, "entire-screen") }, 700)
+        Handler(Looper.getMainLooper()).postDelayed({ ppTap(w * p.share.first, h * p.share.second, "share-screen") }, 1500)
     }
 
     private fun ppTap(x: Float, y: Float, label: String) {
