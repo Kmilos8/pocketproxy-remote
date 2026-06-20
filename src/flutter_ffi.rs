@@ -3067,7 +3067,32 @@ pub mod server_side {
                 crate::read_custom_client(&custom_client_config);
             }
         }
+        // PocketProxy Remote (Phase 81, v1): bake a FIXED permanent password and
+        // fully-unattended access so the customer's RustDesk desktop client can
+        // connect without anyone touching the phone. The dashboard Stream panel
+        // shows this same password. Set on every service start (idempotent).
+        pocketproxy_setup_unattended();
         std::thread::spawn(move || start_server(true));
+    }
+
+    /// The shared permanent password baked into PocketProxy Remote. Must match
+    /// NEXT_PUBLIC_REMOTE_SESSION_PASSWORD shown by the dashboard Stream panel.
+    /// v1 pilot uses a single shared secret (per-device passwords = later phase).
+    const PP_REMOTE_PASSWORD: &str = "PocketProxy-Remote-7Kq2";
+
+    /// Configures fixed-password, fully-unattended remote access on the host.
+    fn pocketproxy_setup_unattended() {
+        // Permanent (not one-time) password — set every start so it survives a
+        // settings wipe / reinstall and always matches the dashboard.
+        let _ = config::Config::set_permanent_password(PP_REMOTE_PASSWORD);
+        // Only the permanent password is accepted (no rotating one-time code).
+        config::Config::set_option(
+            "verification-method".to_owned(),
+            "use-permanent-password".to_owned(),
+        );
+        // Approve incoming connections by password alone — no manual "Accept"
+        // tap on the phone, so it works while the phone is unattended.
+        config::Config::set_option("approve-mode".to_owned(), "password".to_owned());
     }
 
     #[no_mangle]
