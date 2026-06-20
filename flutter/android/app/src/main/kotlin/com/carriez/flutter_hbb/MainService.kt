@@ -220,6 +220,16 @@ class MainService : Service() {
     private var imageReader: ImageReader? = null
     private var virtualDisplay: VirtualDisplay? = null
 
+    // Phase 81: self-heal screen capture. The system can stop the MediaProjection
+    // (Doze / timeout) without RustDesk noticing — leaving a stale "Ready" with a
+    // dead projection that needed a manual Stop/Start. We register a
+    // MediaProjection.Callback and run a watchdog that re-requests projection (our
+    // InputService auto-accepts the consent) so the phone recovers unattended.
+    @Volatile private var wantCapture = false   // user wants capture available
+    @Volatile private var recovering = false     // a re-request is in flight
+    private var lastRecoverAt = 0L
+    private var watchdogStarted = false
+
     // audio
     private val audioRecordHandle = AudioRecordHandle(this, { isStart }, { isAudioStart })
 
@@ -339,6 +349,10 @@ class MainService : Service() {
             intent.getParcelableExtra<Intent>(EXT_MEDIA_PROJECTION_RES_INTENT)?.let {
                 mediaProjection =
                     mediaProjectionManager.getMediaProjection(Activity.RESULT_OK, it)
+                // Phase 81: detect system-initiated stops + arm the self-heal watchdog.
+                mediaProjection?.registerCallback(mediaProjectionCallback, serviceHandler)
+                wantCapture = true
+                startCaptureWatchdog()
                 checkMediaPermission()
                 _isReady = true
             } ?: let {
@@ -360,6 +374,57 @@ class MainService : Service() {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
         }
         startActivity(intent)
+    }
+
+    // Phase 81: fires when the system tears down our MediaProjection (Doze /
+    // timeout / revoke). We null out the dead handles and schedule a re-request
+    // so the companion self-heals instead of showing a stale "Ready".
+    private val mediaProjectionCallback = object : MediaProjection.Callback() {
+        override fun onStop() {
+            Log.w(logTag, "MediaProjection.onStop — system stopped capture; scheduling recovery")
+            mediaProjection = null
+            _isReady = false
+            _isStart = false
+            try { virtualDisplay?.release() } catch (_: Exception) {}
+            virtualDisplay = null
+            checkMediaPermission()
+            if (wantCapture) scheduleCaptureRecover("onStop")
+        }
+    }
+
+    // Re-acquire the projection (InputService auto-accepts the consent). Throttled
+    // so a persistently-failing recovery can't spam the consent dialog.
+    private fun scheduleCaptureRecover(reason: String) {
+        if (recovering) return
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastRecoverAt < 8000L) return
+        recovering = true
+        lastRecoverAt = now
+        Log.d(logTag, "scheduleCaptureRecover($reason)")
+        serviceHandler?.postDelayed({
+            recovering = false
+            if (wantCapture && mediaProjection == null) {
+                Log.d(logTag, "auto re-requesting MediaProjection")
+                requestMediaProjection()
+            }
+        }, 1500L)
+    }
+
+    // Backstop: even if onStop never fires, periodically ensure a live projection.
+    private val captureWatchdog = object : Runnable {
+        override fun run() {
+            if (wantCapture && mediaProjection == null && !recovering) {
+                Log.w(logTag, "captureWatchdog: projection is dead — recovering")
+                scheduleCaptureRecover("watchdog")
+            }
+            serviceHandler?.postDelayed(this, 30000L)
+        }
+    }
+
+    private fun startCaptureWatchdog() {
+        if (watchdogStarted) return
+        watchdogStarted = true
+        serviceHandler?.postDelayed(captureWatchdog, 30000L)
     }
 
     @SuppressLint("WrongConstant")
@@ -476,6 +541,10 @@ class MainService : Service() {
 
     fun destroy() {
         Log.d(logTag, "destroy service")
+        // Phase 81: explicit stop — disarm self-heal so we don't re-request capture.
+        wantCapture = false
+        serviceHandler?.removeCallbacks(captureWatchdog)
+        watchdogStarted = false
         _isReady = false
         _isAudioStart = false
 
