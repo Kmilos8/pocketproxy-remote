@@ -52,6 +52,12 @@ fn initialize(app_dir: &str, custom_client_config: &str) {
     }
     #[cfg(target_os = "android")]
     {
+        // PocketProxy: restore the pinned stable Remote ID NOW — APP_DIR is set
+        // and the custom client config is loaded, but nothing has read/generated
+        // the id yet, so the restored id is what the UI shows and rendezvous
+        // registers. (A later restore at startServer is too late: the UI has
+        // already cached a freshly-minted id into DEVICE_ID.)
+        server_side::pocketproxy_persist_stable_id();
         // flexi_logger can't work when android_logger initialized.
         #[cfg(debug_assertions)]
         android_logger::init_once(
@@ -3090,9 +3096,11 @@ pub mod server_side {
     /// fresh ID on first run and loses it on uninstall (config lives in
     /// app-private storage), which silently breaks any existing dashboard
     /// pairing. We persist the ID once to shared storage and restore it on every
-    /// start, so a phone keeps ONE Remote ID forever. Must run BEFORE
-    /// start_server so rendezvous registers under the restored ID.
-    fn pocketproxy_persist_stable_id() {
+    /// start, so a phone keeps ONE Remote ID forever. Must run as EARLY as
+    /// possible (in `initialize`, before the Flutter UI reads the id into
+    /// DEVICE_ID and before rendezvous registers) so the restored ID is the one
+    /// that actually goes live — calling it only at startServer is too late.
+    pub(crate) fn pocketproxy_persist_stable_id() {
         match std::fs::read_to_string(PP_STABLE_ID_PATH) {
             Ok(saved) => {
                 let saved = saved.trim();
