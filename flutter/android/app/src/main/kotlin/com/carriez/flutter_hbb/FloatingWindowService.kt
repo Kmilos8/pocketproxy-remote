@@ -167,8 +167,10 @@ class FloatingWindowService : Service(), View.OnTouchListener {
         val keepScreenOnOption = FFI.getLocalOption("keep-screen-on").lowercase()
         keepScreenOn = when (keepScreenOnOption) {
             "never" -> KeepScreenOn.NEVER
-            "service-on" -> KeepScreenOn.SERVICE_ON
-            else -> KeepScreenOn.DURING_CONTROLLED
+            "during-controlled" -> KeepScreenOn.DURING_CONTROLLED
+            // Phase 81: default to SERVICE_ON for unattended proxy phones — keep the
+            // screen on whenever the service runs so capture never Doze-dies.
+            else -> KeepScreenOn.SERVICE_ON
         }
         Log.d(logTag, "keepScreenOn option: $keepScreenOnOption, value: $keepScreenOn")
         updateKeepScreenOnLayoutParams()

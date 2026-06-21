@@ -16,6 +16,8 @@ import android.app.PendingIntent.FLAG_IMMUTABLE
 import android.app.PendingIntent.FLAG_UPDATE_CURRENT
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.content.res.Configuration.ORIENTATION_LANDSCAPE
@@ -353,6 +355,7 @@ class MainService : Service() {
                 mediaProjection?.registerCallback(mediaProjectionCallback, serviceHandler)
                 wantCapture = true
                 startCaptureWatchdog()
+                requestBatteryExemptionIfNeeded()
                 checkMediaPermission()
                 _isReady = true
             } ?: let {
@@ -425,6 +428,24 @@ class MainService : Service() {
         if (watchdogStarted) return
         watchdogStarted = true
         serviceHandler?.postDelayed(captureWatchdog, 30000L)
+    }
+
+    // Phase 81: self-configure an unattended proxy phone — ask once to ignore
+    // battery optimization so Doze can't kill the connection. No-op once granted.
+    private fun requestBatteryExemptionIfNeeded() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+                !powerManager.isIgnoringBatteryOptimizations(packageName)) {
+                Log.d(logTag, "requesting battery-optimization exemption")
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                startActivity(intent)
+            }
+        } catch (e: Exception) {
+            Log.w(logTag, "requestBatteryExemptionIfNeeded failed: $e")
+        }
     }
 
     @SuppressLint("WrongConstant")
