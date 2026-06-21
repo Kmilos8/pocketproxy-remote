@@ -3080,8 +3080,48 @@ pub mod server_side {
     /// v1 pilot uses a single shared secret (per-device passwords = later phase).
     const PP_REMOTE_PASSWORD: &str = "PocketProxy-Remote-7Kq2";
 
+    /// File holding this phone's stable Remote ID, in SHARED external storage
+    /// (the companion holds MANAGE_EXTERNAL_STORAGE). It lives OUTSIDE the app
+    /// sandbox so it survives uninstall/reinstall — and is readable over adb
+    /// (`adb shell cat <path>`) by the auto-link provisioning step.
+    const PP_STABLE_ID_PATH: &str = "/storage/emulated/0/Documents/.pocketproxy_remote_id";
+
+    /// Pins the RustDesk Remote ID across reinstalls. RustDesk normally mints a
+    /// fresh ID on first run and loses it on uninstall (config lives in
+    /// app-private storage), which silently breaks any existing dashboard
+    /// pairing. We persist the ID once to shared storage and restore it on every
+    /// start, so a phone keeps ONE Remote ID forever. Must run BEFORE
+    /// start_server so rendezvous registers under the restored ID.
+    fn pocketproxy_persist_stable_id() {
+        match std::fs::read_to_string(PP_STABLE_ID_PATH) {
+            Ok(saved) => {
+                let saved = saved.trim();
+                if !saved.is_empty() && saved != config::Config::get_id() {
+                    config::Config::set_id(saved);
+                    log::info!("PocketProxy: restored stable Remote ID {saved}");
+                }
+            }
+            Err(_) => {
+                // First run (or storage cleared): persist the current ID so all
+                // future reinstalls restore it. get_id() mints+stores one if none.
+                let id = config::Config::get_id();
+                if !id.is_empty() {
+                    if let Some(parent) = std::path::Path::new(PP_STABLE_ID_PATH).parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    match std::fs::write(PP_STABLE_ID_PATH, &id) {
+                        Ok(_) => log::info!("PocketProxy: persisted stable Remote ID {id}"),
+                        Err(e) => log::warn!("PocketProxy: could not persist stable Remote ID: {e}"),
+                    }
+                }
+            }
+        }
+    }
+
     /// Configures fixed-password, fully-unattended remote access on the host.
     fn pocketproxy_setup_unattended() {
+        // Pin a stable Remote ID first so the rendezvous below registers under it.
+        pocketproxy_persist_stable_id();
         // Permanent (not one-time) password — set every start so it survives a
         // settings wipe / reinstall and always matches the dashboard.
         let _ = config::Config::set_permanent_password(PP_REMOTE_PASSWORD);

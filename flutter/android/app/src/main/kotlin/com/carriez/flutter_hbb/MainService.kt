@@ -231,6 +231,12 @@ class MainService : Service() {
     @Volatile private var recovering = false     // a re-request is in flight
     private var lastRecoverAt = 0L
     private var watchdogStarted = false
+    // Bound the self-heal so a recovery that can't silently re-acquire the
+    // projection (e.g. auto-accept missing the consent picker) can NEVER spam
+    // the system "entire screen / single app" dialog forever. Resets to 0 the
+    // moment a projection is successfully (re)acquired or the user Starts.
+    private var recoverAttempts = 0
+    private val maxRecoverAttempts = 3
 
     // audio
     private val audioRecordHandle = AudioRecordHandle(this, { isStart }, { isAudioStart })
@@ -349,10 +355,14 @@ class MainService : Service() {
                 getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
 
             intent.getParcelableExtra<Intent>(EXT_MEDIA_PROJECTION_RES_INTENT)?.let {
-                mediaProjection =
-                    mediaProjectionManager.getMediaProjection(Activity.RESULT_OK, it)
+                val mp = mediaProjectionManager.getMediaProjection(Activity.RESULT_OK, it)
+                mediaProjection = mp
                 // Phase 81: detect system-initiated stops + arm the self-heal watchdog.
-                mediaProjection?.registerCallback(mediaProjectionCallback, serviceHandler)
+                // Identity-guarded callback so a SUPERSEDED projection's onStop can
+                // never null out the freshly-acquired handle (that nulling was what
+                // turned recovery into an endless consent-dialog loop).
+                registerProjectionCallback(mp)
+                recoverAttempts = 0   // a live projection — clear the self-heal budget
                 wantCapture = true
                 startCaptureWatchdog()
                 requestBatteryExemptionIfNeeded()
@@ -381,29 +391,46 @@ class MainService : Service() {
 
     // Phase 81: fires when the system tears down our MediaProjection (Doze /
     // timeout / revoke). We null out the dead handles and schedule a re-request
-    // so the companion self-heals instead of showing a stale "Ready".
-    private val mediaProjectionCallback = object : MediaProjection.Callback() {
-        override fun onStop() {
-            Log.w(logTag, "MediaProjection.onStop — system stopped capture; scheduling recovery")
-            mediaProjection = null
-            _isReady = false
-            _isStart = false
-            try { virtualDisplay?.release() } catch (_: Exception) {}
-            virtualDisplay = null
-            checkMediaPermission()
-            if (wantCapture) scheduleCaptureRecover("onStop")
-        }
+    // so the companion self-heals instead of showing a stale "Ready". The
+    // callback is bound to the SPECIFIC projection instance it was registered on
+    // — a stop from a projection we've already replaced is ignored, so it cannot
+    // clobber a newer live handle.
+    private fun registerProjectionCallback(mp: MediaProjection) {
+        mp.registerCallback(object : MediaProjection.Callback() {
+            override fun onStop() {
+                if (mediaProjection !== mp) {
+                    Log.d(logTag, "ignoring onStop from a superseded projection")
+                    return
+                }
+                Log.w(logTag, "MediaProjection.onStop — system stopped capture; scheduling recovery")
+                mediaProjection = null
+                _isReady = false
+                _isStart = false
+                try { virtualDisplay?.release() } catch (_: Exception) {}
+                virtualDisplay = null
+                checkMediaPermission()
+                if (wantCapture) scheduleCaptureRecover("onStop")
+            }
+        }, serviceHandler)
     }
 
     // Re-acquire the projection (InputService auto-accepts the consent). Throttled
-    // so a persistently-failing recovery can't spam the consent dialog.
+    // AND budget-capped: re-requesting projection always pops the secure "entire
+    // screen / single app" picker, so a recovery that can't silently succeed must
+    // give up after maxRecoverAttempts rather than re-pop it on every tick. The
+    // budget resets when a projection is acquired or the user Starts the service.
     private fun scheduleCaptureRecover(reason: String) {
         if (recovering) return
+        if (recoverAttempts >= maxRecoverAttempts) {
+            Log.w(logTag, "scheduleCaptureRecover($reason): recovery budget exhausted — leaving capture stopped until next Start/connect")
+            return
+        }
         val now = SystemClock.elapsedRealtime()
         if (now - lastRecoverAt < 8000L) return
         recovering = true
         lastRecoverAt = now
-        Log.d(logTag, "scheduleCaptureRecover($reason)")
+        recoverAttempts += 1
+        Log.d(logTag, "scheduleCaptureRecover($reason) attempt $recoverAttempts/$maxRecoverAttempts")
         serviceHandler?.postDelayed({
             recovering = false
             if (wantCapture && mediaProjection == null) {
@@ -414,13 +441,15 @@ class MainService : Service() {
     }
 
     // Backstop: even if onStop never fires, periodically ensure a live projection.
+    // Long interval (the recovery itself is budget-capped) so it never becomes a
+    // visible dialog loop.
     private val captureWatchdog = object : Runnable {
         override fun run() {
-            if (wantCapture && mediaProjection == null && !recovering) {
+            if (wantCapture && mediaProjection == null && !recovering && recoverAttempts < maxRecoverAttempts) {
                 Log.w(logTag, "captureWatchdog: projection is dead — recovering")
                 scheduleCaptureRecover("watchdog")
             }
-            serviceHandler?.postDelayed(this, 30000L)
+            serviceHandler?.postDelayed(this, 60000L)
         }
     }
 
