@@ -217,6 +217,13 @@ jobs:
           sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
           # temporary use debug sign config
           sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
+          # PocketProxy: pin a FIXED debug keystore so every build shares ONE app
+          # signature. Without this the runner mints a random debug keystore each
+          # run, changing the signature → updates can't install over the top and
+          # the app's data (incl. the RustDesk Remote ID) is wiped on reinstall.
+          # With a stable signature, in-place UPDATES keep the Remote ID.
+          mkdir -p ~/.android
+          cp ./ci-debug.keystore ~/.android/debug.keystore
           case ${{ matrix.job.target }} in
             aarch64-linux-android)
               mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
