@@ -366,6 +366,7 @@ class MainService : Service() {
                 wantCapture = true
                 startCaptureWatchdog()
                 requestBatteryExemptionIfNeeded()
+                enableStartOnBoot()
                 checkMediaPermission()
                 _isReady = true
             } ?: let {
@@ -474,6 +475,19 @@ class MainService : Service() {
             }
         } catch (e: Exception) {
             Log.w(logTag, "requestBatteryExemptionIfNeeded failed: $e")
+        }
+    }
+
+    // Phase 81: once a phone has successfully started capturing, flip on
+    // start-on-boot so BootReceiver relaunches the service after a reboot (the
+    // receiver is gated on this pref, which defaults false). Proxy phones run
+    // 24/7, so we always want unattended recovery after a restart.
+    private fun enableStartOnBoot() {
+        try {
+            getSharedPreferences(KEY_SHARED_PREFERENCES, Context.MODE_PRIVATE)
+                .edit().putBoolean(KEY_START_ON_BOOT_OPT, true).apply()
+        } catch (e: Exception) {
+            Log.w(logTag, "enableStartOnBoot failed: $e")
         }
     }
 
