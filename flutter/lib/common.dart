@@ -251,16 +251,17 @@ class MyTheme {
   MyTheme._();
 
   static const Color grayBg = Color(0xFFEFEFF2);
-  static const Color accent = Color(0xFF0071FF);
-  static const Color accent50 = Color(0x770071FF);
-  static const Color accent80 = Color(0xAA0071FF);
+  // PocketProxy brand green (matches the proxy app + dashboard). Was RustDesk blue.
+  static const Color accent = Color(0xFF11BE6E);
+  static const Color accent50 = Color(0x7711BE6E);
+  static const Color accent80 = Color(0xAA11BE6E);
   static const Color canvasColor = Color(0xFF212121);
   static const Color border = Color(0xFFCCCCCC);
-  static const Color idColor = Color(0xFF00B6F0);
+  static const Color idColor = Color(0xFF24F55C);
   static const Color darkGray = Color.fromARGB(255, 148, 148, 148);
   static const Color cmIdColor = Color(0xFF21790B);
   static const Color dark = Colors.black87;
-  static const Color button = Color(0xFF2C8CFF);
+  static const Color button = Color(0xFF11BE6E);
   static const Color hoverBorder = Color(0xFF999999);
 
   // ListTile

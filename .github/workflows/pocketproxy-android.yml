@@ -98,10 +98,14 @@ jobs:
           CONFIG=libs/hbb_common/src/config.rs
           sed -i '/pub const RENDEZVOUS_SERVERS/s#"rs-ny.rustdesk.com"#"relay.pocketproxy.io"#' "$CONFIG"
           sed -i '/pub const RS_PUB_KEY/s#"[^"]*"#"gsVWas6okFllnHhOmJrP8XzJhsRLpXezBQJQjHPocQY="#' "$CONFIG"
+          # Rebrand: APP_NAME drives the in-app title (bind.mainGetAppNameSync) AND
+          # the lang.rs "RustDesk"->APP_NAME replacement in all translated strings.
+          sed -i '/pub static ref APP_NAME/s#"RustDesk"#"PocketProxy Remote"#' "$CONFIG"
           echo "---- baked relay config ----"
-          grep -nE "RENDEZVOUS_SERVERS|RS_PUB_KEY" "$CONFIG"
+          grep -nE "RENDEZVOUS_SERVERS|RS_PUB_KEY|APP_NAME" "$CONFIG"
           grep -q 'relay.pocketproxy.io' "$CONFIG" || { echo "RENDEZVOUS bake FAILED"; exit 1; }
           grep -q 'gsVWas6okFllnHhOmJrP8XzJhsRLpXezBQJQjHPocQY=' "$CONFIG" || { echo "RS_PUB_KEY bake FAILED"; exit 1; }
+          grep -q '"PocketProxy Remote"' "$CONFIG" || { echo "APP_NAME bake FAILED"; exit 1; }
       - name: Install flutter
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:

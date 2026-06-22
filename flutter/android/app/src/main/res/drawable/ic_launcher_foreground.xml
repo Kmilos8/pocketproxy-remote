@@ -1,0 +1,50 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- All content centered in the 66x66 safe zone (18-84 range, center 54,54) -->
+
+    <!-- Pocket U shape -->
+    <path
+        android:pathData="M30,56 L30,66 C30,74 38,80 54,80 C70,80 78,74 78,66 L78,56"
+        android:fillColor="#00000000"
+        android:strokeWidth="4"
+        android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:type="linear"
+                android:startX="30"
+                android:startY="56"
+                android:endX="78"
+                android:endY="80"
+                android:startColor="#11BE6E"
+                android:endColor="#24F55C" />
+        </aapt:attr>
+    </path>
+
+    <!-- Phone tilted -12 degrees, centered in safe zone -->
+    <group
+        android:pivotX="54"
+        android:pivotY="46"
+        android:rotation="-12">
+
+        <!-- Phone body -->
+        <path
+            android:pathData="M42,26 L66,26 Q70,26 70,30 L70,60 Q70,64 66,64 L42,64 Q38,64 38,60 L38,30 Q38,26 42,26 Z"
+            android:fillColor="#00000000"
+            android:strokeColor="#24F55C"
+            android:strokeWidth="3.5" />
+
+        <!-- Phone notch -->
+        <path
+            android:pathData="M49,30 L59,30"
+            android:fillColor="#00000000"
+            android:strokeColor="#24F55C"
+            android:strokeWidth="2"
+            android:strokeLineCap="round"
+            android:alpha="0.5" />
+    </group>
+</vector>
