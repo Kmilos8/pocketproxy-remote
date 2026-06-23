@@ -37,6 +37,14 @@ lazy_static::lazy_static! {
     static ref TEXTURE_RENDER_KEY: Arc<AtomicI32> = Arc::new(AtomicI32::new(0));
 }
 
+/// PocketProxy (Phase 81 reboot fix): set true once the core bootstrap has run,
+/// regardless of entry point — the Dart `main_init` on UI launch, or the
+/// boot-path `startServer` JNI. Lets the boot path detect "the Flutter UI never
+/// initialized me" and run the SAME bootstrap, so the phone registers on the
+/// relay after a reboot instead of capturing-but-staying-invisible.
+pub(crate) static CORE_INITIALIZED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 fn initialize(app_dir: &str, custom_client_config: &str) {
     flutter::async_tasks::start_flutter_async_runner();
     // `APP_DIR` is set in `main_get_data_dir_ios()` on iOS.
@@ -87,6 +95,9 @@ fn initialize(app_dir: &str, custom_client_config: &str) {
         // core_main's init_log does not work for flutter since it is only applied to its load_library in main.c
         hbb_common::init_log(false, "flutter_ffi");
     }
+    // PocketProxy (Phase 81 reboot fix): mark the core bootstrap done so the
+    // boot-path startServer JNI skips a redundant re-init on the UI launch path.
+    CORE_INITIALIZED.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[inline]
@@ -3064,8 +3075,29 @@ pub mod server_side {
     ) {
         log::debug!("startServer from jvm");
         let mut env = env;
-        if let Ok(app_dir) = env.get_string(&app_dir) {
-            *config::APP_DIR.write().unwrap() = app_dir.into();
+        let app_dir_str: String = env
+            .get_string(&app_dir)
+            .map(|s| s.into())
+            .unwrap_or_default();
+        if !app_dir_str.is_empty() {
+            *config::APP_DIR.write().unwrap() = app_dir_str.clone();
+        }
+        // PocketProxy (Phase 81 reboot fix): on the BOOT path the Flutter UI never
+        // runs, so the Dart `main_init` -> initialize() + main_set_home_dir
+        // bootstrap never happened. The phone re-grants screen capture (Kotlin
+        // side) but never registers on the relay, so it is not streamable
+        // hands-off. If the core was NOT initialized by the UI, run the same
+        // bootstrap here. Pin APP_HOME_DIR to shared storage FIRST so get_home()
+        // exists — that both makes registration paths whole AND turns the core
+        // log back on, written to adb-readable shared storage for diagnosis.
+        let ran_boot_init =
+            !super::CORE_INITIALIZED.load(std::sync::atomic::Ordering::SeqCst);
+        if ran_boot_init {
+            if config::APP_HOME_DIR.read().unwrap().is_empty() {
+                *config::APP_HOME_DIR.write().unwrap() = "/storage/emulated/0".to_owned();
+            }
+            log::info!("PocketProxy: boot-path core init (Flutter UI never ran)");
+            super::initialize(&app_dir_str, "");
         }
         if let Ok(custom_client_config) = env.get_string(&custom_client_config) {
             if !custom_client_config.is_empty() {
@@ -3073,6 +3105,9 @@ pub mod server_side {
                 crate::read_custom_client(&custom_client_config);
             }
         }
+        // PocketProxy (Phase 81 reboot diagnosis): snapshot the registration-
+        // critical state to adb-readable shared storage on every server start.
+        pocketproxy_write_boot_diag(ran_boot_init);
         // PocketProxy Remote (Phase 81, v1): bake a FIXED permanent password and
         // fully-unattended access so the customer's RustDesk desktop client can
         // connect without anyone touching the phone. The dashboard Stream panel
@@ -3141,6 +3176,29 @@ pub mod server_side {
         // Approve incoming connections by password alone — no manual "Accept"
         // tap on the phone, so it works while the phone is unattended.
         config::Config::set_option("approve-mode".to_owned(), "password".to_owned());
+    }
+
+    /// PocketProxy (Phase 81 reboot diagnosis): append a one-line snapshot of the
+    /// core's registration-critical state to shared storage on every server
+    /// start. Readable over `adb shell cat` WITHOUT root, so a post-reboot pull
+    /// shows whether APP_DIR / home / id / rendezvous server were set on the boot
+    /// path and whether this start ran the boot-path bootstrap (UI absent).
+    fn pocketproxy_write_boot_diag(ran_boot_init: bool) {
+        use std::io::Write;
+        let app_dir = config::APP_DIR.read().unwrap().clone();
+        let home = config::APP_HOME_DIR.read().unwrap().clone();
+        let id = config::Config::get_id();
+        let servers = config::Config::get_rendezvous_servers().join(",");
+        let line = format!(
+            "start ran_boot_init={ran_boot_init} app_dir=[{app_dir}] home=[{home}] id=[{id}] servers=[{servers}]\n"
+        );
+        let path = "/storage/emulated/0/Documents/.pocketproxy_remote_boot.log";
+        match std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            Ok(mut f) => {
+                let _ = f.write_all(line.as_bytes());
+            }
+            Err(e) => log::warn!("PocketProxy: boot diag write failed: {e}"),
+        }
     }
 
     #[no_mangle]
